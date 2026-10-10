@@ -1,0 +1,26 @@
+name: Build
+
+on:
+  push:
+    branches: ['**']
+    tags: ['*']
+  pull_request:
+    branches: [main]
+
+jobs:
+  aar:
+    name: Assemble AAR
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+          cache: gradle
+      - run: chmod +x gradlew
+      - run: ./gradlew :testswap:assembleRelease :testswap:publishToMavenLocal --no-daemon --console=plain
+      - uses: actions/upload-artifact@v4
+        with:
+          name: testswap-sdk-aar
+          path: testswap/build/outputs/aar/*.aar
