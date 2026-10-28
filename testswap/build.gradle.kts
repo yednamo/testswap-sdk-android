@@ -4,14 +4,15 @@ plugins {
 }
 
 group = "com.github.yednamo"
-version = "0.1.0"
+version = "0.2.0"
 
 android {
     namespace = "com.yednamo.testswap"
     compileSdk = 36
 
     defaultConfig {
-        minSdk = 21
+        // Play Integrity API (бібліотека 1.5+) потребує API 23.
+        minSdk = 23
         consumerProguardFiles("consumer-rules.pro")
     }
 
@@ -30,6 +31,8 @@ android {
 dependencies {
     // Google Play Install Referrer: звідки встановлено застосунок (мітка TestSwap у посиланні).
     implementation("com.android.installreferrer:installreferrer:2.2")
+    // Google Play Integrity API: підтвердження встановлення з Google Play і сертифікованого пристрою.
+    implementation("com.google.android.play:integrity:1.6.0")
 }
 
 // Публікація для JitPack: com.github.yednamo:testswap-sdk-android:<тег>.
