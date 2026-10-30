@@ -19,6 +19,8 @@ jobs:
           java-version: 17
           cache: gradle
       - run: chmod +x gradlew
+      # AGP 9 створює юніт-тести лише для debug (testReleaseUnitTest немає).
+      - run: ./gradlew :testswap:testDebugUnitTest --no-daemon --console=plain
       - run: ./gradlew :testswap:assembleRelease :testswap:publishToMavenLocal --no-daemon --console=plain
       - uses: actions/upload-artifact@v4
         with:
