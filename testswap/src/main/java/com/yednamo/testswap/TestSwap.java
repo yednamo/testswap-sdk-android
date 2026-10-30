@@ -4,8 +4,10 @@ import android.app.Activity;
 import android.app.Application;
 import android.content.Context;
 import android.content.SharedPreferences;
+import android.os.Build;
 import android.os.Bundle;
 import android.os.RemoteException;
+import android.os.SystemClock;
 import android.util.Log;
 
 import com.android.installreferrer.api.InstallReferrerClient;
@@ -19,6 +21,7 @@ import org.json.JSONException;
 import org.json.JSONObject;
 
 import java.io.ByteArrayOutputStream;
+import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
@@ -36,18 +39,20 @@ import java.util.concurrent.Executors;
  * with the app key from your TestSwap dashboard. The dashboard also needs your app's
  * Play Integrity response keys (classic requests, self-managed encryption keys).
  *
- * <p>Flow, at most once per local day of the tester:
+ * <p>Flow, at most once per local day of the tester, started only when an Activity starts
+ * and only in the app's main process (a push or WorkManager wake-up is not the tester using the app):
  * <ol>
  *   <li>TestSwap issues a one-time nonce ({@code /sdk/v2/challenge}).</li>
  *   <li>The SDK requests a classic Play Integrity token with that nonce.</li>
  *   <li>TestSwap decrypts and verifies the token and checks in the day ({@code /sdk/v2/checkin}).</li>
  * </ol>
  *
- * <p>Privacy: only the app key, the participation token from the install tag and the
+ * <p>Privacy: only the app key, the participation token extracted from the install tag and the
  * Play Integrity token are sent. Users who did not install the app through a TestSwap link send nothing.
+ * The decision rules (what to do after each reply) live in {@link Policy}.
  */
 public final class TestSwap {
-    public static final String VERSION = "0.2.0";
+    public static final String VERSION = "0.2.1";
 
     private static final String TAG = "TestSwap";
     private static final String DEFAULT_ENDPOINT = "https://testswap.yednamo.com";
@@ -57,12 +62,14 @@ public final class TestSwap {
     private static final String KEY_REFERRER_CHECKED = "referrer_checked";
     /** Do nothing until this time (ms since epoch): next local day, or a back-off after an error. */
     private static final String KEY_NEXT_AT = "next_at_ms";
+    /** Play Integrity failures in a row (request failed or verdict rejected): drives the back-off. */
+    private static final String KEY_FAILURES = "integrity_failures";
+    /** The one immediate re-run after a nonce error has been used in the current attempt. */
+    private static final String KEY_RETRIED_NOW = "retried_now";
 
-    private static final long MINUTE_MS = 60L * 1000;
-    private static final long RETRY_NETWORK_MS = 30 * MINUTE_MS;
-    private static final long RETRY_INTEGRITY_MS = 60 * MINUTE_MS;
-    private static final long RETRY_LATER_MS = 6 * 60 * MINUTE_MS;
     private static final int TIMEOUT_MS = 15_000;
+    /** A real reply is a few hundred bytes; anything longer is not ours. */
+    private static final int MAX_BODY_BYTES = 64 * 1024;
 
     private static final ExecutorService EXECUTOR = Executors.newSingleThreadExecutor(r -> {
         Thread t = new Thread(r, "testswap");
@@ -71,8 +78,12 @@ public final class TestSwap {
     });
 
     private static volatile boolean initialized;
-    /** One flow (referrer, challenge, Integrity, check-in) at a time. */
-    private static volatile boolean inProgress;
+    private static volatile boolean debugEnabled;
+    /**
+     * One flow (referrer, challenge, Integrity, check-in) at a time: {@code SystemClock.elapsedRealtime()}
+     * when it started, 0 when idle. A flow older than {@link Policy#FLOW_TIMEOUT_MS} is considered dead.
+     */
+    private static volatile long flowStartedAt;
     private static Context appContext;
     private static String appKey;
     private static String endpoint;
@@ -92,12 +103,19 @@ public final class TestSwap {
             Log.w(TAG, "init: context, app key or endpoint is missing, SDK disabled");
             return;
         }
-        appContext = context.getApplicationContext();
+        Context app = context.getApplicationContext();
+        if (app == null) app = context;
+        if (!isMainProcess(app)) {
+            // Helper processes (push, WorkManager, widgets, WebView) must not check in days.
+            return;
+        }
+        appContext = app;
         appKey = key.trim();
         String url = baseUrl.trim();
         endpoint = url.endsWith("/") ? url.substring(0, url.length() - 1) : url;
         initialized = true;
 
+        // The flow starts only from an Activity: a background process start is not the tester using the app.
         if (appContext instanceof Application) {
             ((Application) appContext).registerActivityLifecycleCallbacks(new Application.ActivityLifecycleCallbacks() {
                 @Override public void onActivityStarted(Activity activity) { tick(); }
@@ -109,43 +127,109 @@ public final class TestSwap {
                 @Override public void onActivityDestroyed(Activity activity) { }
             });
         }
-        tick();
+    }
+
+    /** Logs every retry decision under the "TestSwap" tag. Off by default: only terminal states are logged. */
+    public static void setDebug(boolean enabled) {
+        debugEnabled = enabled;
+    }
+
+    private static boolean isMainProcess(Context context) {
+        String name = Build.VERSION.SDK_INT >= Build.VERSION_CODES.P ? Application.getProcessName() : readProcessName();
+        // Unknown name: assume the main process rather than silently disabling the SDK.
+        return name == null || name.isEmpty() || name.equals(context.getPackageName());
+    }
+
+    /** Process name from /proc/self/cmdline (NUL-terminated), for API 26-27. */
+    private static String readProcessName() {
+        try (FileInputStream in = new FileInputStream("/proc/self/cmdline")) {
+            byte[] buf = new byte[512];
+            int n = in.read(buf);
+            if (n <= 0) return null;
+            int end = 0;
+            while (end < n && buf[end] != 0) end++;
+            return new String(buf, 0, end, StandardCharsets.UTF_8).trim();
+        } catch (IOException | RuntimeException e) {
+            return null;
+        }
     }
 
     private static SharedPreferences prefs() {
         return appContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
     }
 
-    /** On every app start: start the flow if it is due. */
+    /** On every Activity start (main thread): start the flow if it is due. */
     private static void tick() {
-        if (!initialized || inProgress) return;
+        if (!initialized) return;
+        long uptime = SystemClock.elapsedRealtime();
+        if (!Policy.canStart(flowStartedAt, uptime)) return;
         SharedPreferences p = prefs();
         if (p.getBoolean(KEY_DONE, false)) return;
-        if (System.currentTimeMillis() < p.getLong(KEY_NEXT_AT, 0)) return;
+        if (!Policy.isDue(p.getLong(KEY_NEXT_AT, 0), System.currentTimeMillis())) return;
         final String token = p.getString(KEY_TOKEN, null);
         if (token != null) {
-            inProgress = true;
-            EXECUTOR.execute(() -> challenge(token, null));
+            flowStartedAt = Math.max(1, uptime);
+            EXECUTOR.execute(() -> challenge(token, false));
         } else if (!p.getBoolean(KEY_REFERRER_CHECKED, false)) {
-            inProgress = true;
+            flowStartedAt = Math.max(1, uptime);
             readReferrer();
         }
     }
 
     private static void finish() {
-        inProgress = false;
+        flowStartedAt = 0;
     }
 
     private static void retryIn(long delayMs) {
-        prefs().edit().putLong(KEY_NEXT_AT, System.currentTimeMillis() + delayMs).apply();
+        prefs().edit()
+                .putLong(KEY_NEXT_AT, System.currentTimeMillis() + Policy.capDelay(delayMs))
+                .putBoolean(KEY_RETRIED_NOW, false)
+                .apply();
     }
 
-    private static void markDone() {
+    private static void markDone(String why) {
         prefs().edit().putBoolean(KEY_DONE, true).apply();
+        Log.w(TAG, "TestSwap SDK stops on this device: " + why);
     }
 
-    private static boolean isOver(String status) {
-        return !"active".equals(status) && !"pending_access".equals(status);
+    private static void referrerChecked(String why) {
+        prefs().edit().putBoolean(KEY_REFERRER_CHECKED, true).apply();
+        debug("not a TestSwap install, SDK stays silent: " + why, null);
+    }
+
+    private static void debug(String msg, Throwable t) {
+        if (!debugEnabled) return;
+        if (t == null) Log.w(TAG, msg);
+        else Log.w(TAG, msg, t);
+    }
+
+    /**
+     * Applies a decision on the SDK thread. Returns true when the flow goes on (immediate re-run)
+     * and the caller must not finish it.
+     */
+    private static boolean apply(Policy.Decision d, String token, String what) {
+        switch (d.kind) {
+            case DONE:
+                markDone(what);
+                return false;
+            case SILENT:
+                referrerChecked(what);
+                return false;
+            case RETRY_NOW:
+                debug(what + ", retrying once with a fresh nonce", null);
+                prefs().edit().putBoolean(KEY_RETRIED_NOW, true).apply();
+                flowStartedAt = Math.max(1, SystemClock.elapsedRealtime());
+                challenge(token, false);
+                return true;
+            default:
+                if (d.integrityFailure) {
+                    SharedPreferences p = prefs();
+                    p.edit().putInt(KEY_FAILURES, p.getInt(KEY_FAILURES, 0) + 1).apply();
+                }
+                retryIn(d.delayMs);
+                debug(what + ", retry in " + d.delayMs / Policy.MINUTE_MS + " min", null);
+                return false;
+        }
     }
 
     private static void readReferrer() {
@@ -153,7 +237,7 @@ public final class TestSwap {
         try {
             client = InstallReferrerClient.newBuilder(appContext).build();
         } catch (RuntimeException e) {
-            Log.w(TAG, "install referrer client failed", e);
+            debug("install referrer client failed", e);
             finish();
             return;
         }
@@ -167,24 +251,25 @@ public final class TestSwap {
                             ReferrerDetails details = client.getInstallReferrer();
                             referrer = details.getInstallReferrer();
                         } catch (RemoteException e) {
-                            Log.w(TAG, "install referrer unavailable", e);
+                            debug("install referrer unavailable", e);
                         } finally {
                             safeEnd(client);
                         }
-                        if (referrer == null || !referrer.contains("ts_")) {
+                        // Only the token leaves the device, never the raw referrer.
+                        final String token = Policy.tokenFromReferrer(referrer);
+                        if (token == null) {
                             // Regular install, not from a TestSwap link: the SDK stays silent from now on.
-                            prefs().edit().putBoolean(KEY_REFERRER_CHECKED, true).apply();
+                            referrerChecked("no ts_ tag in the install referrer");
                             finish();
                             return;
                         }
-                        final String r = referrer;
-                        EXECUTOR.execute(() -> challenge(null, r));
+                        EXECUTOR.execute(() -> challenge(token, true));
                     } else {
                         safeEnd(client);
                         // Not installed from Google Play or the API is unsupported: nothing to do on this device.
                         if (code == InstallReferrerClient.InstallReferrerResponse.FEATURE_NOT_SUPPORTED
                                 || code == InstallReferrerClient.InstallReferrerResponse.DEVELOPER_ERROR) {
-                            prefs().edit().putBoolean(KEY_REFERRER_CHECKED, true).apply();
+                            referrerChecked("install referrer response " + code);
                         }
                         finish();
                     }
@@ -196,7 +281,7 @@ public final class TestSwap {
                 }
             });
         } catch (RuntimeException e) {
-            Log.w(TAG, "install referrer connection failed", e);
+            debug("install referrer connection failed", e);
             finish();
         }
     }
@@ -209,52 +294,45 @@ public final class TestSwap {
         }
     }
 
-    /** Step 1, on the SDK thread: get a one-time nonce. Exactly one of token / referrer is set. */
-    private static void challenge(String token, String referrer) {
+    /**
+     * Step 1, on the SDK thread: get a one-time nonce.
+     * fromReferrer: the token was just extracted from the Install Referrer and is not stored yet.
+     */
+    private static void challenge(String token, boolean fromReferrer) {
         boolean handedOver = false;
         try {
             JSONObject body = new JSONObject();
             body.put("appKey", appKey);
-            if (token != null) body.put("token", token);
-            else body.put("referrer", referrer);
+            body.put("token", token);
             body.put("sdkVersion", VERSION);
             Response res = post("/sdk/v2/challenge", body);
-            if (res.code == 200) {
-                String t = res.json.optString("token", "");
-                if (t.isEmpty()) {
-                    retryIn(RETRY_NETWORK_MS);
-                    return;
-                }
-                prefs().edit().putString(KEY_TOKEN, t).putBoolean(KEY_REFERRER_CHECKED, true).apply();
-                String status = res.json.optString("status", "active");
-                String nonce = res.json.isNull("nonce") ? null : res.json.optString("nonce", null);
-                if (isOver(status)) {
-                    markDone();
-                } else if (nonce == null) {
-                    // Waiting for access (email mode): try again later.
-                    retryIn(RETRY_LATER_MS);
-                } else {
-                    handedOver = true;
-                    requestIntegrity(t, nonce);
-                }
-            } else if (res.code == 404) {
-                // Unknown tag or another app's key: retrying will not help.
-                if (token == null) prefs().edit().putBoolean(KEY_REFERRER_CHECKED, true).apply();
-                else markDone();
-                Log.w(TAG, "install is not linked to TestSwap: " + res.json.optString("error"));
-            } else if (res.code == 409 || res.code == 410) {
-                markDone();
-                Log.w(TAG, "TestSwap SDK disabled for this app: " + res.json.optString("error"));
-            } else if (res.code == 503) {
-                // The developer has not added Play Integrity keys yet.
-                retryIn(RETRY_LATER_MS);
-                Log.w(TAG, "TestSwap verification is not configured: " + res.json.optString("error"));
+            if (res.code != 200) {
+                String error = res.json.optString("error");
+                apply(Policy.onChallengeError(res.code, error, fromReferrer), token, "challenge " + res.code + " " + error);
+                return;
+            }
+            String t = res.json.optString("token", "");
+            if (t.isEmpty()) {
+                retryIn(Policy.RETRY_NETWORK_MS);
+                debug("challenge reply without token, will retry", null);
+                return;
+            }
+            prefs().edit().putString(KEY_TOKEN, t).putBoolean(KEY_REFERRER_CHECKED, true).apply();
+            String status = res.json.optString("status", "active");
+            String nonce = res.json.isNull("nonce") ? null : res.json.optString("nonce", null);
+            if (Policy.isOver(status)) {
+                markDone("test is over: " + status);
+            } else if (nonce == null) {
+                // Waiting for access (email mode): try again later.
+                retryIn(Policy.RETRY_LATER_MS);
+                debug("waiting for access: " + status, null);
             } else {
-                retryIn(RETRY_NETWORK_MS);
+                handedOver = true;
+                requestIntegrity(t, nonce);
             }
         } catch (IOException | JSONException e) {
-            Log.w(TAG, "challenge failed, will retry", e);
-            retryIn(RETRY_NETWORK_MS);
+            debug("challenge failed, will retry", e);
+            retryIn(Policy.RETRY_NETWORK_MS);
         } finally {
             if (!handedOver) finish();
         }
@@ -266,21 +344,22 @@ public final class TestSwap {
             IntegrityManager manager = IntegrityManagerFactory.create(appContext);
             manager.requestIntegrityToken(IntegrityTokenRequest.builder().setNonce(nonce).build())
                     .addOnSuccessListener(EXECUTOR, response -> checkin(token, response.token()))
-                    .addOnFailureListener(EXECUTOR, e -> {
-                        // No Play Store / Play services, outdated, too many requests, network: try again later.
-                        Log.w(TAG, "Play Integrity request failed, will retry", e);
-                        retryIn(RETRY_INTEGRITY_MS);
-                        finish();
-                    });
+                    .addOnFailureListener(EXECUTOR, e -> integrityFailed("Play Integrity request failed", e));
         } catch (RuntimeException e) {
-            Log.w(TAG, "Play Integrity is unavailable", e);
-            retryIn(RETRY_INTEGRITY_MS);
-            finish();
+            integrityFailed("Play Integrity is unavailable", e);
         }
+    }
+
+    /** No Play Store / Play services, outdated, too many requests, network: back off and try again later. */
+    private static void integrityFailed(String what, Exception e) {
+        debug(what, e);
+        apply(Policy.onIntegrityFailure(prefs().getInt(KEY_FAILURES, 0)), null, what);
+        finish();
     }
 
     /** Step 3, on the SDK thread: send the token, TestSwap verifies it and checks in today. */
     private static void checkin(String token, String integrityToken) {
+        boolean handedOver = false;
         try {
             JSONObject body = new JSONObject();
             body.put("appKey", appKey);
@@ -289,26 +368,27 @@ public final class TestSwap {
             body.put("sdkVersion", VERSION);
             Response res = post("/sdk/v2/checkin", body);
             if (res.code == 200) {
-                if (isOver(res.json.optString("status", "active"))) {
-                    markDone();
+                String status = res.json.optString("status", "active");
+                if (Policy.isOver(status)) {
+                    markDone("test is over: " + status);
                 } else {
-                    long sec = res.json.optLong("nextCheckinInSec", 0);
-                    retryIn(sec > 0 ? sec * 1000 : RETRY_LATER_MS);
+                    prefs().edit().putInt(KEY_FAILURES, 0).apply();
+                    retryIn(Policy.nextCheckinDelay(res.json.optLong("nextCheckinInSec", 0)));
+                    debug("checked in: " + res.json.optBoolean("checkedIn", false), null);
                 }
-            } else if (res.code == 403) {
-                // Google Play did not confirm the install or the device: no point retrying right away.
-                Log.w(TAG, "TestSwap rejected the Play Integrity verdict: " + res.json.optString("reason"));
-                retryIn(RETRY_LATER_MS);
-            } else if (res.code == 404 || res.code == 409) {
-                markDone();
             } else {
-                retryIn(RETRY_NETWORK_MS);
+                SharedPreferences p = prefs();
+                String error = res.json.optString("error");
+                String reason = res.json.optString("reason");
+                Policy.Decision d = Policy.onCheckinError(res.code, error, reason,
+                        p.getBoolean(KEY_RETRIED_NOW, false), p.getInt(KEY_FAILURES, 0));
+                handedOver = apply(d, token, "check-in " + res.code + " " + error + " " + reason);
             }
         } catch (IOException | JSONException e) {
-            Log.w(TAG, "check-in failed, will retry", e);
-            retryIn(RETRY_NETWORK_MS);
+            debug("check-in failed, will retry", e);
+            retryIn(Policy.RETRY_NETWORK_MS);
         } finally {
-            finish();
+            if (!handedOver) finish();
         }
     }
 
@@ -353,12 +433,15 @@ public final class TestSwap {
         }
     }
 
+    /** Reads at most {@link #MAX_BODY_BYTES}; a longer body is cut off (and then fails to parse as JSON). */
     private static String readAll(InputStream is) throws IOException {
         try (InputStream in = is) {
             ByteArrayOutputStream out = new ByteArrayOutputStream();
             byte[] buf = new byte[4096];
             int n;
-            while ((n = in.read(buf)) != -1) out.write(buf, 0, n);
+            while (out.size() < MAX_BODY_BYTES && (n = in.read(buf)) != -1) {
+                out.write(buf, 0, Math.min(n, MAX_BODY_BYTES - out.size()));
+            }
             return out.toString("UTF-8");
         }
     }

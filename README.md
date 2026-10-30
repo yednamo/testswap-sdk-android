@@ -49,7 +49,7 @@ dependencyResolutionManagement {
 
 ```kotlin
 dependencies {
-    implementation("com.github.yednamo:testswap-sdk-android:0.2.0")
+    implementation("com.github.yednamo:testswap-sdk-android:0.2.1")
 }
 ```
 
@@ -70,14 +70,19 @@ Java:
 TestSwap.init(this, "tsk_...");
 ```
 
-Бібліотека сама додає дозвіл `INTERNET`. Мінімальна версія Android: 6.0 (API 23), цього вимагає Play Integrity.
+Бібліотека сама додає дозвіл `INTERNET`. Мінімальна версія Android: 8.0 (API 26).
 Версії 0.1.x більше не підтримуються сервером.
+
+SDK працює лише в основному процесі застосунку й запускає перевірку лише під час старту Activity:
+фоновий запуск процесу (push, WorkManager, віджет) день не відмічає. Для діагностики
+`TestSwap.setDebug(true)` вмикає докладні повідомлення в Logcat (тег `TestSwap`).
 
 ### Які дані надсилаються
 
 Ключ застосунку, токен участі з мітки встановлення, токен Google Play Integrity і версія SDK на
 `https://testswap.yednamo.com`. TestSwap зберігає лише результат перевірки, без ідентифікаторів пристрою,
-рекламних ідентифікаторів чи даних користувача. Опишіть використання Play Integrity API та TestSwap
+рекламних ідентифікаторів чи даних користувача; у журналах запитів сервера також лишаються версія SDK
+та IP-адреса клієнта. Опишіть використання Play Integrity API та TestSwap
 у політиці конфіденційності й розділі Data safety у Play Console.
 
 ### Збирання
@@ -120,17 +125,22 @@ Without the keys the app does not appear in the catalog.
 
 ### Setup
 
-Add JitPack to `settings.gradle.kts`, the dependency `com.github.yednamo:testswap-sdk-android:0.2.0`
+Add JitPack to `settings.gradle.kts`, the dependency `com.github.yednamo:testswap-sdk-android:0.2.1`
 to the app module, and call `TestSwap.init(this, "tsk_...")` in `Application.onCreate()` with the app key
 from your TestSwap dashboard (see the Ukrainian section above for full snippets). The library adds the `INTERNET`
-permission itself. Minimum Android version: 6.0 (API 23), required by Play Integrity.
+permission itself. Minimum Android version: 8.0 (API 26).
 Versions 0.1.x are no longer supported by the server.
+
+The SDK runs only in the app's main process and starts the check only when an Activity starts: a background
+process start (push, WorkManager, widget) does not check in a day. For diagnostics, `TestSwap.setDebug(true)`
+enables verbose Logcat messages (tag `TestSwap`).
 
 ### Data sent
 
 The app key, the participation token from the install tag, the Google Play Integrity token and the SDK version,
 to `https://testswap.yednamo.com`. TestSwap stores only the verification result, with no device identifiers,
-advertising IDs or user data. Describe your use of the Play Integrity API and TestSwap in your privacy policy
+advertising IDs or user data; the server's request logs also keep the SDK version and the client IP address.
+Describe your use of the Play Integrity API and TestSwap in your privacy policy
 and the Data safety section in Play Console.
 
 ## License
