@@ -22,6 +22,10 @@ SDK необов’язковий: без нього тестувальники 
    цей одноразовий код, збірку розпізнано Google Play, акаунт отримав застосунок із Google Play, сертифікований пристрій.
 5. Коли тест завершено, SDK більше нічого не надсилає.
 6. Звичайні користувачі (встановили не за посиланням TestSwap) нічого не надсилають: без мітки SDK мовчить.
+7. Після повного перевстановлення SDK починає спочатку (порівнює `firstInstallTime` зі збереженим): стан,
+   який Android Auto Backup відновив із попереднього встановлення, не заважає. Якщо тестувальник спершу
+   поставив застосунок інакше (APK, пошук у Google Play), йому достатньо видалити його й встановити за
+   особистим посиланням.
 
 ### Ключі Play Integrity
 
@@ -49,7 +53,7 @@ dependencyResolutionManagement {
 
 ```kotlin
 dependencies {
-    implementation("com.github.yednamo:testswap-sdk-android:0.2.1")
+    implementation("com.github.yednamo:testswap-sdk-android:0.2.2")
 }
 ```
 
@@ -114,6 +118,9 @@ and testers prefer them.
    one-time code, the build recognized by Google Play, the account got the app from Google Play, a certified device.
 5. Once the test is over, the SDK stops sending anything.
 6. Regular users (not installed via a TestSwap link) send nothing: without the tag the SDK stays silent.
+7. After a full reinstall the SDK starts over (it compares `firstInstallTime` with the stored one): state restored
+   by Android Auto Backup from a previous install does not get in the way. If a tester first installed the app
+   another way (an APK, Google Play search), uninstalling and installing via the personal link is enough.
 
 ### Play Integrity keys
 
@@ -125,7 +132,7 @@ Without the keys the app does not appear in the catalog.
 
 ### Setup
 
-Add JitPack to `settings.gradle.kts`, the dependency `com.github.yednamo:testswap-sdk-android:0.2.1`
+Add JitPack to `settings.gradle.kts`, the dependency `com.github.yednamo:testswap-sdk-android:0.2.2`
 to the app module, and call `TestSwap.init(this, "tsk_...")` in `Application.onCreate()` with the app key
 from your TestSwap dashboard (see the Ukrainian section above for full snippets). The library adds the `INTERNET`
 permission itself. Minimum Android version: 8.0 (API 26).
