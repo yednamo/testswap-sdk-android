@@ -4,7 +4,7 @@ plugins {
 }
 
 group = "com.github.yednamo"
-version = "0.2.2"
+version = "0.3.0"
 
 android {
     namespace = "com.yednamo.testswap"
