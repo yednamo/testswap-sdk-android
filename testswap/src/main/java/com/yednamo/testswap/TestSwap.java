@@ -4,6 +4,7 @@ import android.app.Activity;
 import android.app.Application;
 import android.content.Context;
 import android.content.SharedPreferences;
+import android.content.pm.PackageManager;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.RemoteException;
@@ -52,7 +53,7 @@ import java.util.concurrent.Executors;
  * The decision rules (what to do after each reply) live in {@link Policy}.
  */
 public final class TestSwap {
-    public static final String VERSION = "0.2.1";
+    public static final String VERSION = "0.2.2";
 
     private static final String TAG = "TestSwap";
     private static final String DEFAULT_ENDPOINT = "https://testswap.yednamo.com";
@@ -66,6 +67,12 @@ public final class TestSwap {
     private static final String KEY_FAILURES = "integrity_failures";
     /** The one immediate re-run after a nonce error has been used in the current attempt. */
     private static final String KEY_RETRIED_NOW = "retried_now";
+    /**
+     * {@code PackageInfo.firstInstallTime} the stored state belongs to. Android Auto Backup restores
+     * SharedPreferences on reinstall, so without this a "not a TestSwap install" verdict from an earlier
+     * install (an APK, a Play search install) would silence the SDK forever on that device.
+     */
+    private static final String KEY_INSTALL_TIME = "install_time_ms";
 
     private static final int TIMEOUT_MS = 15_000;
     /** A real reply is a few hundred bytes; anything longer is not ours. */
@@ -113,6 +120,7 @@ public final class TestSwap {
         appKey = key.trim();
         String url = baseUrl.trim();
         endpoint = url.endsWith("/") ? url.substring(0, url.length() - 1) : url;
+        resetStateIfReinstalled();
         initialized = true;
 
         // The flow starts only from an Activity: a background process start is not the tester using the app.
@@ -156,6 +164,29 @@ public final class TestSwap {
 
     private static SharedPreferences prefs() {
         return appContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+    }
+
+    /**
+     * A fresh install (uninstall + install again) gets a new {@code firstInstallTime} and a new Install
+     * Referrer; state restored by Android Auto Backup from the previous install must not survive it.
+     * Updates keep {@code firstInstallTime}, so the stored token and schedule stay.
+     */
+    private static void resetStateIfReinstalled() {
+        long installed;
+        try {
+            installed = appContext.getPackageManager().getPackageInfo(appContext.getPackageName(), 0).firstInstallTime;
+        } catch (PackageManager.NameNotFoundException | RuntimeException e) {
+            return;
+        }
+        SharedPreferences p = prefs();
+        long known = p.getLong(KEY_INSTALL_TIME, 0);
+        if (known == installed) return;
+        SharedPreferences.Editor e = p.edit();
+        if (known != 0) {
+            e.clear();
+            debug("app reinstalled since the stored state, starting over", null);
+        }
+        e.putLong(KEY_INSTALL_TIME, installed).apply();
     }
 
     /** On every Activity start (main thread): start the flow if it is due. */
