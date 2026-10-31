@@ -32,6 +32,18 @@ public class PolicyTest {
     }
 
     @Test
+    public void tokenFromLinkParameter() {
+        assertEquals(TOKEN, Policy.tokenFromLink(TOKEN));
+        assertEquals(TOKEN, Policy.tokenFromLink("ts_" + TOKEN));
+        assertEquals(TOKEN, Policy.tokenFromLink("  " + TOKEN + "\n"));
+        assertNull(Policy.tokenFromLink(null));
+        assertNull(Policy.tokenFromLink(""));
+        assertNull(Policy.tokenFromLink("tooshort"));
+        assertNull(Policy.tokenFromLink(TOKEN + "&x=1"));
+        assertNull(Policy.tokenFromLink("ts_"));
+    }
+
+    @Test
     public void noTokenForRegularInstall() {
         assertNull(Policy.tokenFromReferrer(null));
         assertNull(Policy.tokenFromReferrer(""));

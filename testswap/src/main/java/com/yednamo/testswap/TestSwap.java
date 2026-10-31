@@ -48,12 +48,15 @@ import java.util.concurrent.Executors;
  *   <li>TestSwap decrypts and verifies the token and checks in the day ({@code /sdk/v2/checkin}).</li>
  * </ol>
  *
- * <p>Privacy: only the app key, the participation token extracted from the install tag and the
- * Play Integrity token are sent. Users who did not install the app through a TestSwap link send nothing.
+ * <p>The participation token comes either from the Install Referrer of the personal install link or from a
+ * TestSwap link the tester opens on the device ({@link LinkActivity}), for installs made any other way.
+ *
+ * <p>Privacy: only the app key, the participation token and the Play Integrity token are sent. Users who
+ * neither installed the app through a TestSwap link nor opened one send nothing.
  * The decision rules (what to do after each reply) live in {@link Policy}.
  */
 public final class TestSwap {
-    public static final String VERSION = "0.2.2";
+    public static final String VERSION = "0.3.0";
 
     private static final String TAG = "TestSwap";
     private static final String DEFAULT_ENDPOINT = "https://testswap.yednamo.com";
@@ -135,6 +138,28 @@ public final class TestSwap {
                 @Override public void onActivityDestroyed(Activity activity) { }
             });
         }
+    }
+
+    /**
+     * The tester opened a TestSwap link on this device ({@link LinkActivity}): the install is linked to that
+     * participation whatever the Install Referrer said. Any earlier terminal state (silent, done, back-off)
+     * is dropped; the flow starts on the next Activity start.
+     */
+    static synchronized void linkInstall(String token) {
+        if (!initialized) {
+            Log.w(TAG, "link ignored: TestSwap.init() was not called in Application.onCreate()");
+            return;
+        }
+        prefs().edit()
+                .putString(KEY_TOKEN, token)
+                .putBoolean(KEY_REFERRER_CHECKED, true)
+                .remove(KEY_DONE)
+                .remove(KEY_NEXT_AT)
+                .remove(KEY_FAILURES)
+                .remove(KEY_RETRIED_NOW)
+                .apply();
+        flowStartedAt = 0;
+        Log.i(TAG, "install linked through a TestSwap link");
     }
 
     /** Logs every retry decision under the "TestSwap" tag. Off by default: only terminal states are logged. */
@@ -388,6 +413,32 @@ public final class TestSwap {
         finish();
     }
 
+    /**
+     * "Samsung SM-A525F, Android 14": shown to the developer next to the tester (which devices tested the app).
+     * Model and OS version only, no identifiers.
+     */
+    static String deviceLabel() {
+        String make = Build.MANUFACTURER == null ? "" : Build.MANUFACTURER.trim();
+        String model = Build.MODEL == null ? "" : Build.MODEL.trim();
+        if (!make.isEmpty()) make = Character.toUpperCase(make.charAt(0)) + make.substring(1);
+        String name = model.toLowerCase().startsWith(make.toLowerCase()) ? model : (make + " " + model).trim();
+        String label = name + ", Android " + Build.VERSION.RELEASE;
+        return label.length() > 120 ? label.substring(0, 120) : label;
+    }
+
+    /** "0.6.1 (13)": the app's versionName and versionCode, so the developer sees who runs an outdated build. */
+    static String appVersionLabel() {
+        try {
+            android.content.pm.PackageInfo info = appContext.getPackageManager().getPackageInfo(appContext.getPackageName(), 0);
+            long code = Build.VERSION.SDK_INT >= Build.VERSION_CODES.P ? info.getLongVersionCode() : info.versionCode;
+            String name = info.versionName == null ? "" : info.versionName.trim();
+            String label = (name.isEmpty() ? "" : name + " ") + "(" + code + ")";
+            return label.length() > 40 ? label.substring(0, 40) : label;
+        } catch (PackageManager.NameNotFoundException | RuntimeException e) {
+            return null;
+        }
+    }
+
     /** Step 3, on the SDK thread: send the token, TestSwap verifies it and checks in today. */
     private static void checkin(String token, String integrityToken) {
         boolean handedOver = false;
@@ -397,6 +448,9 @@ public final class TestSwap {
             body.put("token", token);
             body.put("integrityToken", integrityToken);
             body.put("sdkVersion", VERSION);
+            body.put("device", deviceLabel());
+            String appVersion = appVersionLabel();
+            if (appVersion != null) body.put("appVersion", appVersion);
             Response res = post("/sdk/v2/checkin", body);
             if (res.code == 200) {
                 String status = res.json.optString("status", "active");

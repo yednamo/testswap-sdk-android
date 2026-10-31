@@ -23,9 +23,13 @@ SDK необов’язковий: без нього тестувальники 
 5. Коли тест завершено, SDK більше нічого не надсилає.
 6. Звичайні користувачі (встановили не за посиланням TestSwap) нічого не надсилають: без мітки SDK мовчить.
 7. Після повного перевстановлення SDK починає спочатку (порівнює `firstInstallTime` зі збереженим): стан,
-   який Android Auto Backup відновив із попереднього встановлення, не заважає. Якщо тестувальник спершу
-   поставив застосунок інакше (APK, пошук у Google Play), йому достатньо видалити його й встановити за
-   особистим посиланням.
+   який Android Auto Backup відновив із попереднього встановлення, не заважає.
+8. Якщо застосунок встановлено інакше (пошук у Google Play, сторінка «Стати тестувальником», веб-версія
+   Google Play), мітки в Install Referrer немає. Тоді тестувальник натискає на сторінці тесту «Я встановив
+   застосунок, зв'язати»: посилання `testswap://<пакет>/link?token=…` відкриває застосунок, `LinkActivity`
+   з бібліотеки зберігає мітку, і далі все працює як звичайно. Activity оголошує маніфест бібліотеки
+   (хост = `applicationId`), у коді застосунку нічого додавати не треба. Play Integrity перевіряє
+   встановлення так само.
 
 ### Ключі Play Integrity
 
@@ -53,7 +57,7 @@ dependencyResolutionManagement {
 
 ```kotlin
 dependencies {
-    implementation("com.github.yednamo:testswap-sdk-android:0.2.2")
+    implementation("com.github.yednamo:testswap-sdk-android:0.3.0")
 }
 ```
 
@@ -83,10 +87,11 @@ SDK працює лише в основному процесі застосун�
 
 ### Які дані надсилаються
 
-Ключ застосунку, токен участі з мітки встановлення, токен Google Play Integrity і версія SDK на
-`https://testswap.yednamo.com`. TestSwap зберігає лише результат перевірки, без ідентифікаторів пристрою,
-рекламних ідентифікаторів чи даних користувача; у журналах запитів сервера також лишаються версія SDK
-та IP-адреса клієнта. Опишіть використання Play Integrity API та TestSwap
+Ключ застосунку, токен участі (з мітки встановлення або з посилання «зв'язати»), токен Google Play Integrity,
+версія SDK, а з 0.3.0 ще модель пристрою з версією Android («Samsung SM-A525F, Android 14») і версія збірки
+застосунку («0.6.1 (13)») на `https://testswap.yednamo.com`. TestSwap зберігає результат перевірки, модель
+і версії, які бачить розробник у кабінеті; ідентифікатори пристрою, рекламні ідентифікатори чи дані користувача
+не збираються. У журналах запитів сервера також лишаються версія SDK та IP-адреса клієнта. Опишіть використання Play Integrity API та TestSwap
 у політиці конфіденційності й розділі Data safety у Play Console.
 
 ### Збирання
@@ -119,8 +124,12 @@ and testers prefer them.
 5. Once the test is over, the SDK stops sending anything.
 6. Regular users (not installed via a TestSwap link) send nothing: without the tag the SDK stays silent.
 7. After a full reinstall the SDK starts over (it compares `firstInstallTime` with the stored one): state restored
-   by Android Auto Backup from a previous install does not get in the way. If a tester first installed the app
-   another way (an APK, Google Play search), uninstalling and installing via the personal link is enough.
+   by Android Auto Backup from a previous install does not get in the way.
+8. If the app was installed another way (Google Play search, the “Become a tester” page, the Google Play
+   website), there is no tag in the Install Referrer. The tester then presses “I installed the app, link it”
+   on the test page: the link `testswap://<package>/link?token=…` opens the app, the library’s `LinkActivity`
+   stores the tag, and everything works as usual. The activity is declared by the library manifest
+   (host = `applicationId`); nothing to add in the app code. Play Integrity still verifies the install.
 
 ### Play Integrity keys
 
@@ -132,7 +141,7 @@ Without the keys the app does not appear in the catalog.
 
 ### Setup
 
-Add JitPack to `settings.gradle.kts`, the dependency `com.github.yednamo:testswap-sdk-android:0.2.2`
+Add JitPack to `settings.gradle.kts`, the dependency `com.github.yednamo:testswap-sdk-android:0.3.0`
 to the app module, and call `TestSwap.init(this, "tsk_...")` in `Application.onCreate()` with the app key
 from your TestSwap dashboard (see the Ukrainian section above for full snippets). The library adds the `INTERNET`
 permission itself. Minimum Android version: 8.0 (API 26).
@@ -144,9 +153,11 @@ enables verbose Logcat messages (tag `TestSwap`).
 
 ### Data sent
 
-The app key, the participation token from the install tag, the Google Play Integrity token and the SDK version,
-to `https://testswap.yednamo.com`. TestSwap stores only the verification result, with no device identifiers,
-advertising IDs or user data; the server's request logs also keep the SDK version and the client IP address.
+The app key, the participation token (from the install tag or from the “link it” link), the Google Play Integrity
+token, the SDK version and, since 0.3.0, the device model with Android version (“Samsung SM-A525F, Android 14”)
+and the app build version (“0.6.1 (13)”), to `https://testswap.yednamo.com`. TestSwap stores the verification
+result, the model and the versions, which the developer sees in the dashboard; no device identifiers, advertising
+IDs or user data are collected. The server's request logs also keep the SDK version and the client IP address.
 Describe your use of the Play Integrity API and TestSwap in your privacy policy
 and the Data safety section in Play Console.
 
