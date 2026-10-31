@@ -69,6 +69,20 @@ final class Policy {
         }
     }
 
+    /** Same bounds as the server's INSTALL_TOKEN_RE. */
+    private static final Pattern TOKEN = Pattern.compile("^[A-Za-z0-9_-]{20,64}$");
+
+    /**
+     * Participation token from the "token" query parameter of a TestSwap link
+     * ({@code testswap://<package>/link?token=…}), with or without the {@code ts_} prefix; null if malformed.
+     */
+    static String tokenFromLink(String param) {
+        if (param == null) return null;
+        String s = param.trim();
+        if (s.startsWith("ts_")) s = s.substring(3);
+        return TOKEN.matcher(s).matches() ? s : null;
+    }
+
     /** Participation token from the Install Referrer string, or null for a regular install. */
     static String tokenFromReferrer(String referrer) {
         if (referrer == null) return null;

@@ -2,4 +2,25 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <!-- Потрібен для запитів до testswap.yednamo.com (прив'язка встановлення й щоденні відмітки). -->
     <uses-permission android:name="android.permission.INTERNET" />
+
+    <application>
+        <!--
+          Зв'язування встановлення з посилання зі сторінки тесту: testswap://<пакет>/link?token=…
+          Хост = applicationId застосунку (підставляється під час злиття маніфестів), тож кілька
+          застосунків із SDK на одному телефоні не перехоплюють посилання одне одного.
+        -->
+        <activity
+            android:name="com.yednamo.testswap.LinkActivity"
+            android:exported="true"
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:theme="@android:style/Theme.NoDisplay">
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="testswap" android:host="${applicationId}" />
+            </intent-filter>
+        </activity>
+    </application>
 </manifest>
